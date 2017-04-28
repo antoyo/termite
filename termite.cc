@@ -823,19 +823,19 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                 info->panel.url_list.clear();
                 break;
             case GDK_KEY_Left:
-            case GDK_KEY_h:
+            case GDK_KEY_c:
                 move(vte, &info->select, -1, 0);
                 break;
             case GDK_KEY_Down:
-            case GDK_KEY_j:
+            case GDK_KEY_t:
                 move(vte, &info->select, 0, 1);
                 break;
             case GDK_KEY_Up:
-            case GDK_KEY_k:
+            case GDK_KEY_s:
                 move(vte, &info->select, 0, -1);
                 break;
             case GDK_KEY_Right:
-            case GDK_KEY_l:
+            case GDK_KEY_r:
                 move(vte, &info->select, 1, 0);
                 break;
             case GDK_KEY_b:

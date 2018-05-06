@@ -18,6 +18,9 @@ Set the default browser for opening links. If its not set,
 .IP \fIclickable_url\fR
 Auto-detected URLs can be clicked on to open them in your browser. Only
 enabled if a browser is configured or detected.
+.IP \fIhyperlinks\fR
+Enable support for applications to mark text as hyperlinks. Requires
+clickable_url to be set.
 .IP \fIcursor_blink\fR
 Specify the how the terminal's cursor should behave. Accepts
 \fBsystem\fR to respect the gtk global configuration, \fBon\fR and
@@ -34,8 +37,6 @@ Whether to hide url hints not matching input in url hints mode.
 The font description for the terminal's font.
 .IP \fIfullscreen\fR
 Enables entering fullscreen mode by pressing F11.
-.IP \fIgeometry\fR
-The default window geometry for new terminal windows.
 .IP \fIicon_name\fR
 The name of the icon to be used for the terminal process.
 .IP \fImodify_other_keys\fR
@@ -44,7 +45,12 @@ resource for \fBxterm\fR(1).
 .IP \fImouse_autohide\fR
 Automatically hide the mouse pointer when you start typing.
 .IP \fIscrollback_lines\fR
-Set the number of lines to limit the terminal's scrollback.
+Set the number of lines to limit the terminal's scrollback. Setting
+the number of lines to 0 disables this feature, a negative value makes
+the scrollback "infinite".
+.IP \fIscrollbar\fR
+Specify scrollbar visibility and position. Accepts \fBoff\fR, \fBleft\fR and
+\fBright\fR.
 .IP \fIscroll_on_keystroke\fR
 Scroll to the bottom automatically when a key is pressed.
 .IP \fIscroll_on_output\fR

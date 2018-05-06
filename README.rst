@@ -61,6 +61,8 @@ INSERT MODE
 +----------------------+---------------------------------------------+
 | ``shift-pagedown``   | scroll down a page                          |
 +----------------------+---------------------------------------------+
+| ``ctrl-shift-l``     | reset and clear                             |
++----------------------+---------------------------------------------+
 | ``ctrl-+``           | increase font size                          |
 +----------------------+---------------------------------------------+
 | ``ctrl--``           | decrease font size                          |
@@ -106,11 +108,21 @@ SELECTION MODE
 +-----------------------------------+-----------------------------------------------------------+
 | ``w`` or ``shift-right``          | forward word                                              |
 +-----------------------------------+-----------------------------------------------------------+
+| ``e``                             | forward to end of word                                    |
++-----------------------------------+-----------------------------------------------------------+
 | ``b`` or ``shift-left``           | backward word                                             |
 +-----------------------------------+-----------------------------------------------------------+
 | ``W`` or ``ctrl-right``           | forward WORD (non-whitespace)                             |
 +-----------------------------------+-----------------------------------------------------------+
+| ``E``                             | forward to end of WORD (non-whitespace)                   |
++-----------------------------------+-----------------------------------------------------------+
 | ``B`` or ``ctrl-left``            | backward WORD (non-whitespace)                            |
++-----------------------------------+-----------------------------------------------------------+
+| ``H``                             | jump to the top of the screen                             |
++-----------------------------------+-----------------------------------------------------------+
+| ``M``                             | jump to the middle of the screen                          |
++-----------------------------------+-----------------------------------------------------------+
+| ``L``                             | jump to the bottom of the screen                          |
 +-----------------------------------+-----------------------------------------------------------+
 | ``0`` or ``home``                 | move cursor to the first column in the row                |
 +-----------------------------------+-----------------------------------------------------------+
@@ -161,13 +173,13 @@ unique match.
 PADDING
 =======
 
-Internal padding can be added by using CSS to style the VTE widget. Adding the
-following snippet to ``$XDG_CONFIG_HOME/gtk-3.0/gtk.css`` (or
+Internal padding can be added by using CSS to style Termite. Adding
+the following snippet to ``$XDG_CONFIG_HOME/gtk-3.0/gtk.css`` (or
 ``~/.config/gtk-3.0/gtk.css``) will add uniform 2px padding around the edges:
 
 .. code:: css
 
-    VteTerminal, vte-terminal {
+    .termite {
         padding: 2px;
     }
 
@@ -184,11 +196,18 @@ occur:
 
     Error opening terminal: xterm-termite
 
-To solve this issue, copy the terminfo to your remote system and install it for
-the logged in user. Or on Arch Linux install ``termite-terminfo``.
+To solve this issue, install the termite terminfo on your remote system.
+
+On Arch Linux:
 
 ::
 
-    scp termite.terminfo remoteserver:
-    # On the remote server
+        pacman -S termite-terminfo
+
+On other systems:
+
+
+::
+
+    wget https://raw.githubusercontent.com/thestinger/termite/master/termite.terminfo
     tic -x termite.terminfo

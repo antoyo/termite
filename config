@@ -5,14 +5,16 @@
 #dynamic_title = true
 font = Monospace 9
 #fullscreen = true
-#geometry = 640x480
 #icon_name = terminal
 #mouse_autohide = false
 #scroll_on_output = false
 #scroll_on_keystroke = true
+# Length of the scrollback buffer, 0 disabled the scrollback buffer
+# and setting it to a negative value means "infinite scrollback"
 scrollback_lines = 10000
 #search_wrap = true
 #urgent_on_bell = true
+#hyperlinks = false
 
 # $BROWSER is used by default if set, with xdg-open as a fallback
 #browser = xdg-open
@@ -31,6 +33,9 @@ scrollback_lines = 10000
 
 # set size hints for the window
 #size_hints = false
+
+# "off", "left" or "right"
+#scrollbar = off
 
 [colors]
 # If both of these are unset, cursor falls back to the foreground color,

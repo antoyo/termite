@@ -32,6 +32,9 @@
 #include <gtk/gtk.h>
 #include <vte/vte.h>
 
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
+
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
 #endif
@@ -157,10 +160,11 @@ static void search(VteTerminal *vte, const char *pattern, bool reverse);
 static void overlay_show(search_panel_info *info, overlay_mode mode, VteTerminal *vte);
 static void get_vte_padding(VteTerminal *vte, int *left, int *top, int *right, int *bottom);
 static char *check_match(VteTerminal *vte, GdkEventButton *event);
-static void load_config(GtkWindow *window, VteTerminal *vte, config_info *info,
-                        char **geometry, char **icon);
-static void set_config(GtkWindow *window, VteTerminal *vte, config_info *info,
-                        char **geometry, char **icon, GKeyFile *config);
+static void load_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar, GtkWidget *hbox,
+                        config_info *info, char **icon, bool *show_scrollbar);
+static void set_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar, GtkWidget *hbox,
+                       config_info *info, char **icon, bool *show_scrollbar,
+                       GKeyFile *config);
 static long first_row(VteTerminal *vte);
 
 static std::function<void ()> reload_config;
@@ -504,6 +508,23 @@ static long last_row(VteTerminal *vte) {
     return (long)gtk_adjustment_get_upper(adjust) - 1;
 }
 
+static long top_row(VteTerminal *vte) {
+    GtkAdjustment *adjust = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(vte));
+    return (long)gtk_adjustment_get_value(adjust);
+}
+
+static long middle_row(VteTerminal *vte) {
+    GtkAdjustment *adjust = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(vte));
+    return (long)gtk_adjustment_get_value(adjust) +
+                (long)vte_terminal_get_row_count(vte) / 2;
+}
+
+static long bottom_row(VteTerminal *vte) {
+    GtkAdjustment *adjust = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(vte));
+    return (long)gtk_adjustment_get_value(adjust) +
+                (long)vte_terminal_get_row_count(vte) - 1;
+}
+
 static void update_scroll(VteTerminal *vte) {
     GtkAdjustment *adjust = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(vte));
     const double scroll_row = gtk_adjustment_get_value(adjust);
@@ -543,6 +564,11 @@ static void move_to_row_start(VteTerminal *vte, select_info *select, long row) {
 }
 
 static void open_selection(char *browser, VteTerminal *vte) {
+    if (!vte_terminal_get_has_selection(vte)) {
+        g_printerr("no selection to open\n");
+        return;
+    }
+
     if (browser) {
         auto selection = make_unique(vte_terminal_get_selection(vte), g_free);
         if (selection && *selection) {
@@ -672,7 +698,7 @@ static void move_to_eol(VteTerminal *vte, select_info *select) {
 }
 
 template<typename F>
-static void move_forward(VteTerminal *vte, select_info *select, F is_word) {
+static void move_forward(VteTerminal *vte, select_info *select, F is_word, bool goto_word_end) {
     long cursor_col, cursor_row;
     vte_terminal_get_cursor_position(vte, &cursor_col, &cursor_row);
 
@@ -698,15 +724,24 @@ static void move_forward(VteTerminal *vte, select_info *select, F is_word) {
 
     bool end_of_word = false;
 
-    for (long i = 1; i < length; i++) {
-        if (is_word(codepoints[i - 1])) {
-            if (end_of_word) {
+    if (!goto_word_end) {
+        for (long i = 1; i < length; i++) {
+            if (is_word(codepoints[i - 1])) {
+                if (end_of_word) {
+                    break;
+                }
+            } else {
+                end_of_word = true;
+            }
+            cursor_col++;
+        }
+    } else {
+        for (long i = 2; i <= length; i++) {
+            cursor_col++;
+            if (is_word(codepoints[i - 1]) && !is_word(codepoints[i])) {
                 break;
             }
-        } else {
-            end_of_word = true;
         }
-        cursor_col++;
     }
     vte_terminal_set_cursor_position(vte, cursor_col, cursor_row);
     update_selection(vte, select);
@@ -714,12 +749,20 @@ static void move_forward(VteTerminal *vte, select_info *select, F is_word) {
     g_free(codepoints);
 }
 
+static void move_forward_end_word(VteTerminal *vte, select_info *select) {
+    move_forward(vte, select, is_word_char, true);
+}
+
+static void move_forward_end_blank_word(VteTerminal *vte, select_info *select) {
+    move_forward(vte, select, std::not1(std::ref(g_unichar_isspace)), true);
+}
+
 static void move_forward_word(VteTerminal *vte, select_info *select) {
-    move_forward(vte, select, is_word_char);
+    move_forward(vte, select, is_word_char, false);
 }
 
 static void move_forward_blank_word(VteTerminal *vte, select_info *select) {
-    move_forward(vte, select, std::not1(std::ref(g_unichar_isspace)));
+    move_forward(vte, select, std::not1(std::ref(g_unichar_isspace)), false);
 }
 
 /* {{{ CALLBACKS */
@@ -850,6 +893,12 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
             case GDK_KEY_W:
                 move_forward_blank_word(vte, &info->select);
                 break;
+            case GDK_KEY_e:
+                move_forward_end_word(vte, &info->select);
+                break;
+            case GDK_KEY_E:
+                move_forward_end_blank_word(vte, &info->select);
+                break;
             case GDK_KEY_0:
             case GDK_KEY_Home:
                 set_cursor_column(vte, &info->select, 0);
@@ -868,6 +917,15 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
             case GDK_KEY_G:
                 move_to_row_start(vte, &info->select, last_row(vte));
                 break;
+            case GDK_KEY_H:
+                move_to_row_start(vte, &info->select, top_row(vte));
+                break;
+            case GDK_KEY_M:
+                move_to_row_start(vte, &info->select, middle_row(vte));
+                break;
+            case GDK_KEY_L:
+                move_to_row_start(vte, &info->select, bottom_row(vte));
+                break;
             case GDK_KEY_v:
                 toggle_visual(vte, &info->select, vi_mode::visual);
                 break;
@@ -875,7 +933,11 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                 toggle_visual(vte, &info->select, vi_mode::visual_line);
                 break;
             case GDK_KEY_y:
+#if VTE_CHECK_VERSION(0, 50, 0)
+                vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT);
+#else
                 vte_terminal_copy_clipboard(vte);
+#endif
                 break;
             case GDK_KEY_slash:
                 overlay_show(&info->panel, overlay_mode::search, vte);
@@ -937,13 +999,20 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                 exit_command_mode(vte, &info->select);
                 return TRUE;
             case GDK_KEY_c:
+#if VTE_CHECK_VERSION(0, 50, 0)
+                vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT);
+#else
                 vte_terminal_copy_clipboard(vte);
+#endif
                 return TRUE;
             case GDK_KEY_v:
                 vte_terminal_paste_clipboard(vte);
                 return TRUE;
             case GDK_KEY_r:
                 reload_config();
+                return TRUE;
+            case GDK_KEY_l:
+                vte_terminal_reset(vte, TRUE, TRUE);
                 return TRUE;
             default:
                 if (modify_key_feed(event, info, modify_table))
@@ -1113,7 +1182,14 @@ gboolean position_overlay_cb(GtkBin *overlay, GtkWidget *widget, GdkRectangle *a
 
 gboolean button_press_cb(VteTerminal *vte, GdkEventButton *event, const config_info *info) {
     if (info->clickable_url && event->type == GDK_BUTTON_PRESS) {
+#if VTE_CHECK_VERSION (0, 49, 1)
+        auto match = make_unique(vte_terminal_hyperlink_check_event(vte, (GdkEvent*)event), g_free);
+        if (!match) {
+            match = make_unique(check_match(vte, event), g_free);
+        }
+#else
         auto match = make_unique(check_match(vte, event), g_free);
+#endif
         if (!match)
             return FALSE;
 
@@ -1176,10 +1252,13 @@ GtkTreeModel *create_completion_model(VteTerminal *vte) {
 void search(VteTerminal *vte, const char *pattern, bool reverse) {
     auto terminal_search = reverse ? vte_terminal_search_find_previous : vte_terminal_search_find_next;
 
-    GRegex *regex = vte_terminal_search_get_gregex(vte);
-    if (regex) g_regex_unref(regex);
-    regex = g_regex_new(pattern, (GRegexCompileFlags)0, (GRegexMatchFlags)0, nullptr);
-    vte_terminal_search_set_gregex(vte, regex, (GRegexMatchFlags)0);
+    VteRegex *regex = vte_terminal_search_get_regex(vte);
+    if (regex) vte_regex_unref(regex);
+    vte_terminal_search_set_regex(vte,
+                    vte_regex_new_for_search(pattern,
+                                    (gssize) strlen(pattern),
+                                    PCRE2_MULTILINE | PCRE2_CASELESS,
+                                    nullptr), 0);
 
     if (!terminal_search(vte)) {
         vte_terminal_unselect_all(vte);
@@ -1338,44 +1417,51 @@ static void load_theme(GtkWindow *window, VteTerminal *vte, GKeyFile *config, hi
     hints.roundness = get_config_double(config, "hints", "roundness").get_value_or(1.5);
 }
 
-static void load_config(GtkWindow *window, VteTerminal *vte, config_info *info,
-                        char **geometry, char **icon) {
+static void load_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar,
+                        GtkWidget *hbox, config_info *info, char **icon,
+                        bool *show_scrollbar) {
     const std::string default_path = "/termite/config";
     GKeyFile *config = g_key_file_new();
+    GError *error = nullptr;
 
     gboolean loaded = FALSE;
 
     if (info->config_file) {
         loaded = g_key_file_load_from_file(config,
                                            info->config_file,
-                                           G_KEY_FILE_NONE, nullptr);
+                                           G_KEY_FILE_NONE, &error);
+        if (!loaded)
+            g_printerr("%s parsing failed: %s\n", info->config_file,
+                       error->message);
     }
 
     if (!loaded) {
         loaded = g_key_file_load_from_file(config,
                                            (g_get_user_config_dir() + default_path).c_str(),
-                                           G_KEY_FILE_NONE, nullptr);
+                                           G_KEY_FILE_NONE, &error);
+        if (!loaded)
+            g_printerr("%s parsing failed: %s\n", (g_get_user_config_dir() + default_path).c_str(),
+                       error->message);
     }
 
     for (const char *const *dir = g_get_system_config_dirs();
          !loaded && *dir; dir++) {
         loaded = g_key_file_load_from_file(config, (*dir + default_path).c_str(),
-                                           G_KEY_FILE_NONE, nullptr);
+                                           G_KEY_FILE_NONE, &error);
+        if (!loaded)
+            g_printerr("%s parsing failed: %s\n", (*dir + default_path).c_str(),
+                       error->message);
     }
 
     if (loaded) {
-        set_config(window, vte, info, geometry, icon, config);
+        set_config(window, vte, scrollbar, hbox, info, icon, show_scrollbar, config);
     }
     g_key_file_free(config);
 }
 
-static void set_config(GtkWindow *window, VteTerminal *vte, config_info *info,
-                        char **geometry, char **icon, GKeyFile *config) {
-    if (geometry) {
-        if (auto s = get_config_string(config, "options", "geometry")) {
-            *geometry = *s;
-        }
-    }
+static void set_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar, GtkWidget *hbox,
+                       config_info *info, char **icon, bool *show_scrollbar_ptr,
+                       GKeyFile *config) {
 
     auto cfg_bool = [config](const char *key, gboolean value) {
         return get_config<gboolean>(g_key_file_get_boolean,
@@ -1388,6 +1474,9 @@ static void set_config(GtkWindow *window, VteTerminal *vte, config_info *info,
     vte_terminal_set_mouse_autohide(vte, cfg_bool("mouse_autohide", FALSE));
     vte_terminal_set_allow_bold(vte, cfg_bool("allow_bold", TRUE));
     vte_terminal_search_set_wrap_around(vte, cfg_bool("search_wrap", TRUE));
+#if VTE_CHECK_VERSION (0, 49, 1)
+    vte_terminal_set_allow_hyperlink(vte, cfg_bool("hyperlinks", FALSE));
+#endif
     info->dynamic_title = cfg_bool("dynamic_title", TRUE);
     info->urgent_on_bell = cfg_bool("urgent_on_bell", TRUE);
     info->clickable_url = cfg_bool("clickable_url", TRUE);
@@ -1411,12 +1500,12 @@ static void set_config(GtkWindow *window, VteTerminal *vte, config_info *info,
     }
 
     if (info->clickable_url) {
-        info->tag = vte_terminal_match_add_gregex(vte,
-            g_regex_new(url_regex,
-                        (GRegexCompileFlags)(G_REGEX_CASELESS | G_REGEX_MULTILINE),
-                        G_REGEX_MATCH_NOTEMPTY,
-                        nullptr),
-            (GRegexMatchFlags)0);
+        info->tag = vte_terminal_match_add_regex(vte,
+                vte_regex_new_for_match(url_regex,
+                                        (gssize) strlen(url_regex),
+                                        PCRE2_MULTILINE | PCRE2_NOTEMPTY,
+                                        nullptr),
+                0);
         vte_terminal_match_set_cursor_type(vte, info->tag, GDK_HAND2);
     } else if (info->tag != -1) {
         vte_terminal_match_remove(vte, info->tag);
@@ -1466,6 +1555,27 @@ static void set_config(GtkWindow *window, VteTerminal *vte, config_info *info,
         set_size_hints(GTK_WINDOW(window), vte);
     }
 
+    bool show_scrollbar = false;
+    if (auto s = get_config_string(config, "options", "scrollbar")) {
+        // "off" is implicitly handled by default
+        if (!g_ascii_strcasecmp(*s, "left")) {
+            show_scrollbar = true;
+            gtk_box_reorder_child(GTK_BOX(hbox), scrollbar, 0);
+        } else if (!g_ascii_strcasecmp(*s, "right")) {
+            show_scrollbar = true;
+            gtk_box_reorder_child(GTK_BOX(hbox), scrollbar, -1);
+        }
+        g_free(*s);
+    }
+    if (show_scrollbar) {
+        gtk_widget_show(scrollbar);
+    } else {
+        gtk_widget_hide(scrollbar);
+    }
+    if (show_scrollbar_ptr != nullptr) {
+        *show_scrollbar_ptr = show_scrollbar;
+    }
+
     load_theme(window, vte, config, info->hints);
 }/*}}}*/
 
@@ -1480,11 +1590,15 @@ static void exit_with_success(VteTerminal *) {
 }
 
 static char *get_user_shell_with_fallback() {
-    if (const char *env = g_getenv("SHELL"))
-        return g_strdup(env);
+    if (const char *env = g_getenv("SHELL") ) {
+        if (!((env != NULL) && (env[0] == '\0')))
+            return g_strdup(env);
+    }
 
-    if (char *command = vte_get_user_shell())
-        return command;
+    if (char *command = vte_get_user_shell()) {
+        if (!((command != NULL) && (command[0] == '\0')))
+           return command;
+    }
 
     return g_strdup("/bin/sh");
 }
@@ -1506,15 +1620,15 @@ int main(int argc, char **argv) {
     gboolean version = FALSE, hold = FALSE;
 
     GOptionContext *context = g_option_context_new(nullptr);
-    char *role = nullptr, *geometry = nullptr, *execute = nullptr, *config_file = nullptr;
+    char *role = nullptr, *execute = nullptr, *config_file = nullptr;
     char *title = nullptr, *icon = nullptr;
+    bool show_scrollbar = false;
     const GOptionEntry entries[] = {
         {"version", 'v', 0, G_OPTION_ARG_NONE, &version, "Version info", nullptr},
         {"exec", 'e', 0, G_OPTION_ARG_STRING, &execute, "Command to execute", "COMMAND"},
         {"role", 'r', 0, G_OPTION_ARG_STRING, &role, "The role to use", "ROLE"},
         {"title", 't', 0, G_OPTION_ARG_STRING, &title, "Window title", "TITLE"},
         {"directory", 'd', 0, G_OPTION_ARG_STRING, &directory, "Change to directory", "DIRECTORY"},
-        {"geometry", 0, 0, G_OPTION_ARG_STRING, &geometry, "Window geometry", "GEOMETRY"},
         {"hold", 0, 0, G_OPTION_ARG_NONE, &hold, "Remain open after child process exits", nullptr},
         {"config", 'c', 0, G_OPTION_ARG_STRING, &config_file, "Path of config file", "CONFIG"},
         {"icon", 'i', 0, G_OPTION_ARG_STRING, &icon, "Icon", "ICON"},
@@ -1552,6 +1666,12 @@ int main(int argc, char **argv) {
     GtkWidget *vte_widget = vte_terminal_new();
     VteTerminal *vte = VTE_TERMINAL(vte_widget);
 
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(hbox),"termite");
+    GtkWidget *scrollbar = gtk_scrollbar_new(GTK_ORIENTATION_VERTICAL, gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(vte_widget)));
+    gtk_box_pack_start(GTK_BOX(hbox), hint_overlay, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), scrollbar, FALSE, FALSE, 0);
+
     if (role) {
         gtk_window_set_role(GTK_WINDOW(window), role);
         g_free(role);
@@ -1587,11 +1707,12 @@ int main(int argc, char **argv) {
         gtk_window_fullscreen
     };
 
-    load_config(GTK_WINDOW(window), vte, &info.config, geometry ? nullptr : &geometry,
-                icon ? nullptr : &icon);
+    load_config(GTK_WINDOW(window), vte, scrollbar, hbox, &info.config,
+                icon ? nullptr : &icon, &show_scrollbar);
 
     reload_config = [&]{
-        load_config(GTK_WINDOW(window), vte, &info.config, nullptr, nullptr);
+        load_config(GTK_WINDOW(window), vte, scrollbar, hbox, &info.config,
+                    nullptr, nullptr);
     };
     signal(SIGUSR1, [](int){ reload_config(); });
 
@@ -1613,7 +1734,7 @@ int main(int argc, char **argv) {
     gtk_widget_set_halign(info.panel.entry, GTK_ALIGN_START);
     gtk_widget_set_valign(info.panel.entry, GTK_ALIGN_END);
 
-    gtk_container_add(GTK_CONTAINER(panel_overlay), hint_overlay);
+    gtk_container_add(GTK_CONTAINER(panel_overlay), hbox);
     gtk_container_add(GTK_CONTAINER(hint_overlay), vte_widget);
     gtk_container_add(GTK_CONTAINER(window), panel_overlay);
 
@@ -1646,16 +1767,11 @@ int main(int argc, char **argv) {
     } else {
         g_signal_connect(vte, "window-title-changed", G_CALLBACK(window_title_cb),
                          &info.config.dynamic_title);
-        window_title_cb(vte, &info.config.dynamic_title);
-    }
-
-    if (geometry) {
-        gtk_widget_show_all(panel_overlay);
-        gtk_widget_show_all(info.panel.entry);
-        if (!gtk_window_parse_geometry(GTK_WINDOW(window), geometry)) {
-            g_printerr("invalid geometry string: %s\n", geometry);
+        if (execute) {
+            gtk_window_set_title(GTK_WINDOW(window), execute);
+        } else {
+            window_title_cb(vte, &info.config.dynamic_title);
         }
-        g_free(geometry);
     }
 
     if (icon) {
@@ -1667,6 +1783,9 @@ int main(int argc, char **argv) {
     gtk_widget_show_all(window);
     gtk_widget_hide(info.panel.entry);
     gtk_widget_hide(info.panel.da);
+    if (!show_scrollbar) {
+        gtk_widget_hide(scrollbar);
+    }
 
     char **env = g_get_environ();
 
